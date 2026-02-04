@@ -7,7 +7,6 @@ from typing import BinaryIO, Optional, Union
 import base64
 import datetime
 import json
-import uuid
 import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
@@ -461,24 +460,14 @@ def init_history() -> None:
     return _default_container.init_history()
 
 
-st.set_page_config(page_title="Sora Video Generator", layout="centered")
-
-st.title("Sora Video Generator")
-
 sync_cookie_controller()
 require_login()
 init_history()
 
 endpoint = st.secrets.get("ENDPOINT_URL")
 deployment = st.secrets.get("DEPLOYMENT_NAME")
-subscription_key = st.secrets.get("AZURE_OPENAI_API_KEY") or os.getenv(
-    "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"
-)
+subscription_key = st.secrets.get("AZURE_OPENAI_API_KEY")
 api_version = st.secrets.get("API_VERSION") or os.getenv("API_VERSION", "preview")
-
-if not endpoint or not deployment:
-    st.error("Secrets が不足しています。ENDPOINT_URL と DEPLOYMENT_NAME を設定してください。")
-    st.stop()
 
 st.session_state.setdefault("endpoint", endpoint)
 st.session_state.setdefault("deployment", deployment)
@@ -574,14 +563,12 @@ if st.button("Generate Video", type="primary"):
                 except Exception as e:
                     st.error(f"参考画像のリサイズに失敗しました: {e}")
                     st.stop()
-        elif resize_ref:
-            st.info("参考画像がないためリサイズはスキップされます。")
 
         with st.status("Requesting video job...", expanded=False) as status_box:
             create_kwargs = {
                 "model": st.session_state.deployment,
                 "prompt": prompt,
-                "seconds": str(seconds),
+                "seconds": int(seconds),
                 "size": effective_size,
             }
             if input_reference is not None:
