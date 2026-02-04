@@ -10,9 +10,9 @@ from openai.types.video import Video
 
 import basic_setting
 
-st.set_page_config(page_title="Sora Video Generator", layout="centered")
+st.set_page_config(page_title="", layout="centered")
 
-st.title("Sora Video Generator")
+st.title("")
 
 basic_setting.sync_cookie_controller()
 basic_setting.require_login()
