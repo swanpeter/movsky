@@ -10,10 +10,6 @@ from openai.types.video import Video
 
 import basic_setting
 
-st.set_page_config(page_title="", layout="centered")
-
-st.title("")
-
 basic_setting.sync_cookie_controller()
 basic_setting.require_login()
 basic_setting.init_history()
