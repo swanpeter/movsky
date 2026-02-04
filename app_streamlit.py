@@ -7,6 +7,7 @@ from typing import BinaryIO, Optional, Union
 import base64
 import datetime
 import json
+import uuid
 import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
