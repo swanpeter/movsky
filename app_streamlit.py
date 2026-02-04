@@ -574,6 +574,8 @@ if st.button("Generate Video", type="primary"):
                 except Exception as e:
                     st.error(f"参考画像のリサイズに失敗しました: {e}")
                     st.stop()
+        elif resize_ref:
+            st.info("参考画像がないためリサイズはスキップされます。")
 
         with st.status("Requesting video job...", expanded=False) as status_box:
             create_kwargs = {
