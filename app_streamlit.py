@@ -569,7 +569,7 @@ if st.button("Generate Video", type="primary"):
             create_kwargs = {
                 "model": st.session_state.deployment,
                 "prompt": prompt,
-                "seconds": int(seconds),
+                "seconds": str(seconds),
                 "size": effective_size,
             }
             if input_reference is not None:
@@ -617,7 +617,7 @@ if st.button("Generate Video", type="primary"):
                         "id": result.id,
                         "prompt": prompt,
                         "size": effective_size,
-                        "seconds": int(seconds),
+                        "seconds": str(seconds),
                         "created_at": int(time.time()),
                         "video_path": filename,
                     }
