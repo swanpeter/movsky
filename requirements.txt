@@ -1,0 +1,4 @@
+openai
+streamlit
+pillow
+streamlit-cookies-controller
