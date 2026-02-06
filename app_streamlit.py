@@ -264,7 +264,7 @@ class BasicSetting:
                     "model": entry.get("model"),
                     "no_text": entry.get("no_text"),
                     "image_b64": image_b64,
-                    "size": entry.get("size"),
+                    "resolution": entry.get("resolution", entry.get("size")),
                     "seconds": entry.get("seconds"),
                     "created_at": entry.get("created_at"),
                     "video_path": entry.get("video_path"),
@@ -284,7 +284,7 @@ class BasicSetting:
                     "model": entry.get("model"),
                     "no_text": entry.get("no_text"),
                     "image_bytes": image_bytes,
-                    "size": entry.get("size"),
+                    "resolution": entry.get("resolution", entry.get("size")),
                     "seconds": entry.get("seconds"),
                     "created_at": entry.get("created_at"),
                     "video_path": entry.get("video_path"),
@@ -476,13 +476,12 @@ st.session_state.setdefault("api_version", api_version)
 
 prompt = st.text_area("Prompt", value="text prompt", height=120)
 seconds = st.selectbox("Seconds", [4, 8, 12], index=1)
-size = st.selectbox("Size", ["1280x720", "720x1280", "1920x1080"], index=0)
+resolution = st.selectbox("Resolution", ["1280x720", "720x1280", "1920x1080"], index=0)
 
 st.subheader("Reference Image (optional)")
 uploaded = st.file_uploader("Upload image", type=["png", "jpg", "jpeg", "webp"])
 input_image_path = None
-match_ref_size = True
-resize_ref = st.checkbox("Resize reference to selected size", value=False)
+resize_ref = st.checkbox("Resize reference to selected resolution", value=False)
 
 if subscription_key == "AZURE_OPENAI_API_KEY":
     st.warning("AZURE_OPENAI_API_KEY が未設定です。環境変数を設定してください。")
@@ -525,11 +524,9 @@ if st.button("Generate Video", type="primary"):
     temp_path: Optional[Path] = None
     try:
         input_reference, temp_path = resolve_input_reference()
-        effective_size = size
         resolution_hint = None
-        if size == "1920x1080":
+        if resolution == "1920x1080":
             resolution_hint = 'resolution:"1080p"'
-            effective_size = "1280x720"
         resized_path: Optional[Path] = None
 
         if input_reference:
@@ -538,33 +535,31 @@ if st.button("Generate Video", type="primary"):
             except Exception:
                 st.error("Pillow が必要です。`pip install pillow` を実行してください。")
                 st.stop()
-            if match_ref_size and not resize_ref:
+            if not resize_ref:
                 try:
                     with Image.open(input_reference) as img:
                         w, h = img.size
-                    effective_size = f"{w}x{h}"
+                    ref_size = f"{w}x{h}"
                 except Exception as e:
                     st.error(f"参考画像のサイズ取得に失敗しました: {e}")
                     st.stop()
-
-                if effective_size not in {"1280x720", "720x1280"}:
+                if ref_size != resolution:
                     st.error(
-                        f"参考画像サイズ {effective_size} は未対応です。"
-                        " 対応サイズの画像を用意するか、サイズ自動一致をOFFにしてください。"
+                        f"参考画像サイズ {ref_size} は選択した解像度 {resolution} と一致しません。"
+                        " リサイズをONにするか、解像度に合う画像を用意してください。"
                     )
                     st.stop()
 
             if resize_ref:
                 try:
-                    # Resize to the requested size (mapped if needed).
-                    w, h = map(int, effective_size.split("x"))
+                    # Resize to the requested resolution.
+                    w, h = map(int, resolution.split("x"))
                     with Image.open(input_reference) as img:
                         resized = img.resize((w, h), Image.LANCZOS)
                         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
                         resized.save(tmp.name, format="PNG")
                     resized_path = Path(tmp.name)
                     input_reference = resized_path
-                    effective_size = size
                 except Exception as e:
                     st.error(f"参考画像のリサイズに失敗しました: {e}")
                     st.stop()
@@ -577,7 +572,6 @@ if st.button("Generate Video", type="primary"):
                 "model": st.session_state.deployment,
                 "prompt": prompt_with_resolution,
                 "seconds": str(seconds),
-                "size": effective_size,
             }
             if input_reference is not None:
                 create_kwargs["input_reference"] = input_reference
@@ -623,7 +617,7 @@ if st.button("Generate Video", type="primary"):
                     {
                         "id": result.id,
                         "prompt": prompt,
-                        "size": effective_size,
+                        "resolution": resolution,
                         "seconds": str(seconds),
                         "created_at": int(time.time()),
                         "video_path": filename,
