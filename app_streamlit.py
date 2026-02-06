@@ -476,7 +476,7 @@ st.session_state.setdefault("api_version", api_version)
 
 prompt = st.text_area("Prompt", value="text prompt", height=120)
 seconds = st.selectbox("Seconds", [4, 8, 12], index=1)
-size = st.selectbox("Size", ["1280x720", "720x1280"], index=0)
+size = st.selectbox("Size", ["1280x720", "720x1280", "1920x1080"], index=0)
 
 st.subheader("Reference Image (optional)")
 uploaded = st.file_uploader("Upload image", type=["png", "jpg", "jpeg", "webp"])
@@ -526,6 +526,10 @@ if st.button("Generate Video", type="primary"):
     try:
         input_reference, temp_path = resolve_input_reference()
         effective_size = size
+        resolution_hint = None
+        if size == "1920x1080":
+            resolution_hint = 'resolution:"1080p"'
+            effective_size = "1280x720"
         resized_path: Optional[Path] = None
 
         if input_reference:
@@ -552,8 +556,8 @@ if st.button("Generate Video", type="primary"):
 
             if resize_ref:
                 try:
-                    # Resize to the user-selected size (not the original ref size).
-                    w, h = map(int, size.split("x"))
+                    # Resize to the requested size (mapped if needed).
+                    w, h = map(int, effective_size.split("x"))
                     with Image.open(input_reference) as img:
                         resized = img.resize((w, h), Image.LANCZOS)
                         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
@@ -566,9 +570,12 @@ if st.button("Generate Video", type="primary"):
                     st.stop()
 
         with st.status("Requesting video job...", expanded=False) as status_box:
+            prompt_with_resolution = prompt
+            if resolution_hint:
+                prompt_with_resolution = f"{prompt}\n{resolution_hint}"
             create_kwargs = {
                 "model": st.session_state.deployment,
-                "prompt": prompt,
+                "prompt": prompt_with_resolution,
                 "seconds": str(seconds),
                 "size": effective_size,
             }
