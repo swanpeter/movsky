@@ -111,7 +111,7 @@ def create_azure_preview_video_job(
             "width": width,
             "height": height,
             "n_seconds": int(seconds),
-            "model": st.session_state.deployment,
+            "model": st.session_state.azure_video_deployment,
         }
         response = httpx.post(
             create_url,
@@ -131,7 +131,7 @@ def create_azure_preview_video_job(
             "height": str(height),
             "n_seconds": str(int(seconds)),
             "n_variants": "1",
-            "model": st.session_state.deployment,
+            "model": st.session_state.azure_video_deployment,
             "inpaint_items": json.dumps(
                 [
                     {
@@ -615,11 +615,17 @@ deployment = st.secrets.get("DEPLOYMENT_NAME")
 subscription_key = st.secrets.get("AZURE_OPENAI_API_KEY")
 api_version = st.secrets.get("API_VERSION") or os.getenv("API_VERSION", "preview")
 video_model = get_secret_value("VIDEO_MODEL") or os.getenv("VIDEO_MODEL", "sora-2")
+azure_video_deployment = (
+    get_secret_value("AZURE_VIDEO_DEPLOYMENT")
+    or os.getenv("AZURE_VIDEO_DEPLOYMENT")
+    or ("sora" if isinstance(deployment, str) and deployment.lower().startswith("sora-2") else deployment)
+)
 
 st.session_state.setdefault("endpoint", endpoint)
 st.session_state.setdefault("deployment", deployment)
 st.session_state.setdefault("api_version", api_version)
 st.session_state.setdefault("video_model", video_model)
+st.session_state.setdefault("azure_video_deployment", azure_video_deployment)
 
 prompt = st.text_area("Prompt", value="text prompt", height=120)
 seconds = st.selectbox("Seconds", [4, 8, 12], index=1)
@@ -749,6 +755,7 @@ if st.button("Generate Video", type="primary"):
                                     "size": effective_size,
                                     "has_input_reference": input_reference is not None,
                                     "deployment_name": st.session_state.deployment,
+                                    "azure_video_deployment": st.session_state.azure_video_deployment,
                                     "api_version": st.session_state.api_version,
                                     "endpoint_root": normalize_endpoint_root(st.session_state.endpoint),
                                 },
