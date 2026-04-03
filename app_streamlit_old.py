@@ -10,7 +10,7 @@ import datetime
 import json
 import streamlit as st
 import streamlit.components.v1 as components
-from openai import BadRequestError, OpenAI
+from openai import OpenAI
 from openai.types.video import Video
 
 try:
@@ -41,22 +41,6 @@ def get_secret_value(key: str) -> Optional[str]:
         except Exception:
             return None
     return None
-
-
-def extract_error_details(exc: Exception) -> object:
-    response = getattr(exc, "response", None)
-    if response is not None:
-        try:
-            return response.json()
-        except Exception:
-            pass
-        text = getattr(response, "text", None)
-        if text:
-            return text
-    body = getattr(exc, "body", None)
-    if body is not None:
-        return body
-    return str(exc)
 
 
 def rerun_app() -> None:
@@ -485,12 +469,10 @@ endpoint = st.secrets.get("ENDPOINT_URL")
 deployment = st.secrets.get("DEPLOYMENT_NAME")
 subscription_key = st.secrets.get("AZURE_OPENAI_API_KEY")
 api_version = st.secrets.get("API_VERSION") or os.getenv("API_VERSION", "preview")
-video_model = get_secret_value("VIDEO_MODEL") or os.getenv("VIDEO_MODEL", "sora-2")
 
 st.session_state.setdefault("endpoint", endpoint)
 st.session_state.setdefault("deployment", deployment)
 st.session_state.setdefault("api_version", api_version)
-st.session_state.setdefault("video_model", video_model)
 
 prompt = st.text_area("Prompt", value="text prompt", height=120)
 seconds = st.selectbox("Seconds", [4, 8, 12], index=1)
@@ -586,31 +568,14 @@ if st.button("Generate Video", type="primary"):
 
         with st.status("Requesting video job...", expanded=False) as status_box:
             create_kwargs = {
-                "model": st.session_state.video_model,
+                "model": st.session_state.deployment,
                 "prompt": prompt,
                 "seconds": str(seconds),
                 "size": effective_size,
             }
             if input_reference is not None:
                 create_kwargs["input_reference"] = input_reference
-            try:
-                job: Video = client.videos.create(**create_kwargs)
-            except BadRequestError as exc:
-                status_box.update(label="Job creation failed", state="error")
-                st.error("Video job creation failed with BadRequestError.")
-                st.json(
-                    {
-                        "request": {
-                            "model": create_kwargs["model"],
-                            "seconds": create_kwargs["seconds"],
-                            "size": create_kwargs["size"],
-                            "has_input_reference": input_reference is not None,
-                            "deployment_name": st.session_state.deployment,
-                        },
-                        "error": extract_error_details(exc),
-                    }
-                )
-                st.stop()
+            job: Video = client.videos.create(**create_kwargs)
             status_box.update(label=f"Job created: {job.id}", state="running")
 
         st.info(f"Polling job status for ID: {job.id}")
