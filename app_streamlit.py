@@ -61,6 +61,17 @@ def extract_error_details(exc: Exception) -> object:
     return str(exc)
 
 
+def extract_httpx_error_details(exc: httpx.HTTPStatusError) -> object:
+    response = exc.response
+    try:
+        return response.json()
+    except Exception:
+        text = response.text
+        if text:
+            return text
+    return str(exc)
+
+
 def normalize_endpoint_root(raw_endpoint: Optional[str]) -> str:
     endpoint = (raw_endpoint or "").strip().rstrip("/")
     marker = endpoint.lower().find("/openai")
@@ -720,12 +731,32 @@ if st.button("Generate Video", type="primary"):
                 error_details = extract_error_details(exc)
                 if should_fallback_to_azure_preview(error_details):
                     use_azure_preview_api = True
-                    preview_job = create_azure_preview_video_job(
-                        prompt=prompt,
-                        seconds=int(seconds),
-                        size=effective_size,
-                        input_reference=input_reference,
-                    )
+                    try:
+                        preview_job = create_azure_preview_video_job(
+                            prompt=prompt,
+                            seconds=int(seconds),
+                            size=effective_size,
+                            input_reference=input_reference,
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        status_box.update(label="Azure preview job creation failed", state="error")
+                        st.error("Azure preview video job creation failed.")
+                        st.json(
+                            {
+                                "request": {
+                                    "prompt": prompt,
+                                    "seconds": int(seconds),
+                                    "size": effective_size,
+                                    "has_input_reference": input_reference is not None,
+                                    "deployment_name": st.session_state.deployment,
+                                    "api_version": st.session_state.api_version,
+                                    "endpoint_root": normalize_endpoint_root(st.session_state.endpoint),
+                                },
+                                "status_code": exc.response.status_code,
+                                "error": extract_httpx_error_details(exc),
+                            }
+                        )
+                        st.stop()
                     job_id = str(preview_job["id"])
                     status_box.update(label=f"Azure preview job created: {job_id}", state="running")
                 else:
@@ -757,7 +788,18 @@ if st.button("Generate Video", type="primary"):
         if use_azure_preview_api:
             pending_statuses = {"queued", "running", "in_progress", "preprocessing", "processing"}
             while status in pending_statuses:
-                result = retrieve_azure_preview_video_job(job_id)
+                try:
+                    result = retrieve_azure_preview_video_job(job_id)
+                except httpx.HTTPStatusError as exc:
+                    st.error("Azure preview job status retrieval failed.")
+                    st.json(
+                        {
+                            "job_id": job_id,
+                            "status_code": exc.response.status_code,
+                            "error": extract_httpx_error_details(exc),
+                        }
+                    )
+                    st.stop()
                 status = str(result.get("status"))
                 dots = "・" * (tick % 4)
                 spinner.write(f"処理中{dots}")
@@ -798,8 +840,20 @@ if st.button("Generate Video", type="primary"):
                 if not generation_id:
                     st.error("Video generation succeeded but generation ID is missing.")
                     st.stop()
+                try:
+                    content = download_azure_preview_video(str(generation_id))
+                except httpx.HTTPStatusError as exc:
+                    st.error("Azure preview video download failed.")
+                    st.json(
+                        {
+                            "generation_id": generation_id,
+                            "status_code": exc.response.status_code,
+                            "error": extract_httpx_error_details(exc),
+                        }
+                    )
+                    st.stop()
                 with open(filename, "wb") as f:
-                    f.write(download_azure_preview_video(str(generation_id)))
+                    f.write(content)
             else:
                 content = client.videos.download_content(result.id, variant="video")
                 content.write_to_file(filename)
