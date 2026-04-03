@@ -2,11 +2,13 @@ import os
 import time
 import tempfile
 import uuid
+import mimetypes
 from pathlib import Path
 from typing import BinaryIO, Optional, Union
 
 import base64
 import datetime
+import httpx
 import json
 import streamlit as st
 import streamlit.components.v1 as components
@@ -57,6 +59,122 @@ def extract_error_details(exc: Exception) -> object:
     if body is not None:
         return body
     return str(exc)
+
+
+def normalize_endpoint_root(raw_endpoint: Optional[str]) -> str:
+    endpoint = (raw_endpoint or "").strip().rstrip("/")
+    marker = endpoint.lower().find("/openai")
+    if marker != -1:
+        endpoint = endpoint[:marker]
+    return endpoint
+
+
+def should_fallback_to_azure_preview(error_details: object) -> bool:
+    if not isinstance(error_details, dict):
+        return False
+    error = error_details.get("error")
+    if not isinstance(error, dict):
+        return False
+    return error.get("param") == "model" and error.get("code") == "unknown_parameter"
+
+
+def build_azure_preview_headers() -> dict[str, str]:
+    return {"api-key": subscription_key}
+
+
+def create_azure_preview_video_job(
+    *,
+    prompt: str,
+    seconds: int,
+    size: str,
+    input_reference: Optional[Union[BinaryIO, Path]],
+) -> dict[str, object]:
+    endpoint_root = normalize_endpoint_root(st.session_state.endpoint)
+    width, height = map(int, size.split("x"))
+    create_url = f"{endpoint_root}/openai/v1/video/generations/jobs"
+    params = {"api-version": st.session_state.api_version}
+
+    if input_reference is None:
+        body = {
+            "prompt": prompt,
+            "width": width,
+            "height": height,
+            "n_seconds": int(seconds),
+            "model": st.session_state.deployment,
+        }
+        response = httpx.post(
+            create_url,
+            headers={**build_azure_preview_headers(), "Content-Type": "application/json"},
+            params=params,
+            json=body,
+            timeout=120,
+        )
+    else:
+        if not isinstance(input_reference, Path):
+            raise ValueError("Azure preview fallback requires a file path for input_reference.")
+        file_name = input_reference.name
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+        data = {
+            "prompt": prompt,
+            "width": str(width),
+            "height": str(height),
+            "n_seconds": str(int(seconds)),
+            "n_variants": "1",
+            "model": st.session_state.deployment,
+            "inpaint_items": json.dumps(
+                [
+                    {
+                        "frame_index": 0,
+                        "type": "image",
+                        "file_name": file_name,
+                        "crop_bounds": {
+                            "left_fraction": 0.0,
+                            "top_fraction": 0.0,
+                            "right_fraction": 1.0,
+                            "bottom_fraction": 1.0,
+                        },
+                    }
+                ]
+            ),
+        }
+        with open(input_reference, "rb") as uploaded_file:
+            response = httpx.post(
+                create_url,
+                headers=build_azure_preview_headers(),
+                params=params,
+                data=data,
+                files={"files": (file_name, uploaded_file, mime_type)},
+                timeout=120,
+            )
+
+    response.raise_for_status()
+    return response.json()
+
+
+def retrieve_azure_preview_video_job(job_id: str) -> dict[str, object]:
+    endpoint_root = normalize_endpoint_root(st.session_state.endpoint)
+    status_url = f"{endpoint_root}/openai/v1/video/generations/jobs/{job_id}"
+    response = httpx.get(
+        status_url,
+        headers=build_azure_preview_headers(),
+        params={"api-version": st.session_state.api_version},
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def download_azure_preview_video(generation_id: str) -> bytes:
+    endpoint_root = normalize_endpoint_root(st.session_state.endpoint)
+    video_url = f"{endpoint_root}/openai/v1/video/generations/{generation_id}/content/video"
+    response = httpx.get(
+        video_url,
+        headers=build_azure_preview_headers(),
+        params={"api-version": st.session_state.api_version},
+        timeout=300,
+    )
+    response.raise_for_status()
+    return response.content
 
 
 def rerun_app() -> None:
@@ -509,7 +627,7 @@ if subscription_key == "AZURE_OPENAI_API_KEY":
 def build_client() -> OpenAI:
     return OpenAI(
         api_key=subscription_key,
-        base_url=f"{st.session_state.endpoint}openai/v1/",
+        base_url=f"{normalize_endpoint_root(st.session_state.endpoint)}/openai/v1/",
         default_headers={"api-key": subscription_key},
         
         default_query={"api-version": st.session_state.api_version},
@@ -546,6 +664,7 @@ if st.button("Generate Video", type="primary"):
         input_reference, temp_path = resolve_input_reference()
         effective_size = size
         resized_path: Optional[Path] = None
+        use_azure_preview_api = False
 
         if input_reference:
             try:
@@ -585,6 +704,7 @@ if st.button("Generate Video", type="primary"):
                     st.stop()
 
         with st.status("Requesting video job...", expanded=False) as status_box:
+            job_id: Optional[str] = None
             create_kwargs = {
                 "model": st.session_state.video_model,
                 "prompt": prompt,
@@ -595,33 +715,59 @@ if st.button("Generate Video", type="primary"):
                 create_kwargs["input_reference"] = input_reference
             try:
                 job: Video = client.videos.create(**create_kwargs)
+                job_id = job.id
             except BadRequestError as exc:
-                status_box.update(label="Job creation failed", state="error")
-                st.error("Video job creation failed with BadRequestError.")
-                st.json(
-                    {
-                        "request": {
-                            "model": create_kwargs["model"],
-                            "seconds": create_kwargs["seconds"],
-                            "size": create_kwargs["size"],
-                            "has_input_reference": input_reference is not None,
-                            "deployment_name": st.session_state.deployment,
-                        },
-                        "error": extract_error_details(exc),
-                    }
-                )
-                st.stop()
-            status_box.update(label=f"Job created: {job.id}", state="running")
+                error_details = extract_error_details(exc)
+                if should_fallback_to_azure_preview(error_details):
+                    use_azure_preview_api = True
+                    preview_job = create_azure_preview_video_job(
+                        prompt=prompt,
+                        seconds=int(seconds),
+                        size=effective_size,
+                        input_reference=input_reference,
+                    )
+                    job_id = str(preview_job["id"])
+                    status_box.update(label=f"Azure preview job created: {job_id}", state="running")
+                else:
+                    status_box.update(label="Job creation failed", state="error")
+                    st.error("Video job creation failed with BadRequestError.")
+                    st.json(
+                        {
+                            "request": {
+                                "model": create_kwargs["model"],
+                                "seconds": create_kwargs["seconds"],
+                                "size": create_kwargs["size"],
+                                "has_input_reference": input_reference is not None,
+                                "deployment_name": st.session_state.deployment,
+                            },
+                            "error": error_details,
+                        }
+                    )
+                    st.stop()
+            else:
+                status_box.update(label=f"Job created: {job_id}", state="running")
 
-        st.info(f"Polling job status for ID: {job.id}")
+        st.info(f"Polling job status for ID: {job_id}")
         status_placeholder = st.empty()
         spinner = st.empty()
         status = "queued"
         tick = 0
+        result: object = {}
 
-        if hasattr(client.videos, "retrieve"):
+        if use_azure_preview_api:
+            pending_statuses = {"queued", "running", "in_progress", "preprocessing", "processing"}
+            while status in pending_statuses:
+                result = retrieve_azure_preview_video_job(job_id)
+                status = str(result.get("status"))
+                dots = "・" * (tick % 4)
+                spinner.write(f"処理中{dots}")
+                status_placeholder.write(f"Status: {status}")
+                if status in pending_statuses:
+                    time.sleep(5)
+                    tick += 1
+        elif hasattr(client.videos, "retrieve"):
             while status in {"queued", "running", "in_progress"}:
-                result = client.videos.retrieve(job.id)
+                result = client.videos.retrieve(job_id)
                 status = result.status
                 dots = "・" * (tick % 4)
                 spinner.write(f"処理中{dots}")
@@ -635,22 +781,34 @@ if st.button("Generate Video", type="primary"):
                     time.sleep(5)
                     tick += 1
         else:
-            result = client.videos.poll(job.id, poll_interval_ms=5_000)
+            result = client.videos.poll(job_id, poll_interval_ms=5_000)
             status = result.status
             status_placeholder.write(f"Status: {status}")
 
-        if status == "completed":
+        if status in {"completed", "succeeded"}:
             st.success("Video generation succeeded.")
             spinner.write("✅ 完了")
-            content = client.videos.download_content(result.id, variant="video")
             filename = f"output_{int(time.time())}.mp4"
-            content.write_to_file(filename)
+            if use_azure_preview_api:
+                generations = result.get("generations", []) if isinstance(result, dict) else []
+                if not generations:
+                    st.error("Video generation succeeded but no generations were returned.")
+                    st.stop()
+                generation_id = generations[0].get("id")
+                if not generation_id:
+                    st.error("Video generation succeeded but generation ID is missing.")
+                    st.stop()
+                with open(filename, "wb") as f:
+                    f.write(download_azure_preview_video(str(generation_id)))
+            else:
+                content = client.videos.download_content(result.id, variant="video")
+                content.write_to_file(filename)
             st.session_state["last_video"] = filename
             history = st.session_state.get("history", [])
             if isinstance(history, list):
                 history.append(
                     {
-                        "id": result.id,
+                        "id": result["id"] if isinstance(result, dict) else result.id,
                         "prompt": prompt,
                         "size": effective_size,
                         "seconds": str(seconds),
@@ -666,13 +824,17 @@ if st.button("Generate Video", type="primary"):
         elif status == "failed":
             st.error("Video generation failed.")
             spinner.write("❌ 失敗")
-            st.json(result.model_dump())
+            st.json(result if isinstance(result, dict) else result.model_dump())
+        elif status == "cancelled":
+            st.warning("Video generation was cancelled.")
+            spinner.write("⚠️ キャンセル")
+            st.json(result if isinstance(result, dict) else result.model_dump())
         elif status in {"queued", "running", "in_progress"}:
             st.info("まだ処理中です。しばらくお待ちください。")
-            st.json(result.model_dump())
+            st.json(result if isinstance(result, dict) else result.model_dump())
         else:
             st.warning("Unexpected status returned.")
-            st.json(result.model_dump())
+            st.json(result if isinstance(result, dict) else result.model_dump())
     finally:
         if input_reference and hasattr(input_reference, "close"):
             input_reference.close()
